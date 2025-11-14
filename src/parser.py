@@ -1,8 +1,7 @@
 import os
 import sys
 import re
-sys.path.append('.')
-from chip import Chip
+from .chip import Chip
 
 def read_nodes_file(filepath):
     """
