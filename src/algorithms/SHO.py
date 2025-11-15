@@ -1,16 +1,3 @@
-# src/optimizer_sho.py
-"""
-Spotted Hyena Optimizer (SHO) - simple implementation for VLSI placement optimization.
-
-Usage:
-    from src.optimizer_sho import spotted_hyena_optimizer
-    result = spotted_hyena_optimizer(chip, pop_size=30, iters=200, ...)
-    # result is a dict with keys:
-    #   'best_cost', 'hpwl', 'hpwl_normalized', 'congestion_penalty', 'congestion_normalized',
-    #   'max_congestion', 'avg_congestion', 'overflow_ratio', 'overlap_ratio',
-    #   'execution_time', 'iterations'
-"""
-
 import time
 import random
 from copy import deepcopy

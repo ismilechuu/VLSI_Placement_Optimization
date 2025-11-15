@@ -1,15 +1,3 @@
-
-# src/algorithms/SA.py
-"""
-Simulated Annealing (SA) for VLSI placement optimization.
-
-Interface mirrors SHO.spotted_hyena_optimizer(...) so you can swap easily.
-Returns dict with keys:
-  'best_cost', 'hpwl', 'hpwl_normalized', 'congestion_penalty',
-  'congestion_normalized', 'max_congestion', 'avg_congestion',
-  'overflow_ratio', 'overlap_ratio', 'execution_time', 'iterations'
-"""
-
 import time
 import math
 import random
@@ -212,7 +200,7 @@ def simulated_annealing(
     }
 
     if verbose:
-        print("\\n==== SA RESULT ====")
+        print("\n==== SA RESULT ====")
         print(f"Best Cost      : {result['best_cost']}")
         print(f"HPWL           : {result['hpwl']}")
         print(f"Max Congestion : {result['max_congestion']}")
