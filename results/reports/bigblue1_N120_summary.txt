@@ -1,0 +1,16 @@
+Benchmark : bigblue1
+N_evals   : 120
+alpha/beta/gamma : 0.9, 1e-05, 0.0003
+grid      : (32, 32)
+overlap   : (64, 64)
+
+=== Algorithm Results ===
+
+---- WOA ----
+Best Cost      : 0.013043
+HPWL           : 104,185,677
+Max Congestion : 1.09e+12
+Avg Congestion : 1.06e+09
+Overflow Ratio : 0.000977
+Overlap Ratio  : 0.381872
+Execution Time : 1673.97 s

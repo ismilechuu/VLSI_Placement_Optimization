@@ -1,181 +1,164 @@
+# =========================================================
+# evaluator.py (Final Version — with overlap_grid, gamma)
+# =========================================================
 import numpy as np
 from typing import List, Optional
 from .chip import Chip, Net
 
+
+# -------------------------
+# HPWL
+# -------------------------
 def calculate_HPWL(chip: Chip, net: Optional[Net] = None) -> float:
-    """
-    HPWL calculator (ฟังก์ชันเดียวใช้ได้ 2 โหมด)
-    - calculate_HPWL(chip)            -> รวมทุกเน็ต (Total HPWL)
-    - calculate_HPWL(chip, net=...)   -> เฉพาะเน็ตเดียว
-    """
     def _hpwl_one(n: Net) -> float:
-        """คำนวณ HPWL ของ net เดียว"""
-        x_positions: List[float] = []
-        y_positions: List[float] = []
-        
+        xs = []
+        ys = []
         for name in n.modules:
             mod = chip.modules.get(name)
-                
             x, y = mod.get_position()
-            x_positions.append(x)
-            y_positions.append(y)
-        
-        # ต้องมีอย่างน้อย 2 modules ที่ถูก place
-        if len(x_positions) < 2:
+            xs.append(x)
+            ys.append(y)
+        if len(xs) < 2:
             return 0.0
-            
-        return (max(x_positions) - min(x_positions)) + (max(y_positions) - min(y_positions))
-    # Single net mode
+        return (max(xs) - min(xs)) + (max(ys) - min(ys))
+
     if net is not None:
         return _hpwl_one(net)
 
-    # Total HPWL mode
     return sum(_hpwl_one(n) for n in chip.get_all_nets())
 
+
+# -------------------------
+# Congestion (RUDY)
+# -------------------------
 def calculate_congestion(chip, grid_size=(10, 10)):
-    
     rows, cols = grid_size
-    
-    # สร้างตารางเปล่าๆ (เริ่มต้นทุกช่อง = 0)
-    congestion_map = np.zeros((rows, cols))
-    
-    # คำนวณขนาดของแต่ละช่อง
-    cell_width = chip.width / cols   # เช่น 100/10 = 10
-    cell_height = chip.height / rows  # เช่น 100/10 = 10
-    
-    # วนลูปแต่ละ net
+    cmap = np.zeros((rows, cols))
+
+    cell_w = chip.width / cols
+    cell_h = chip.height / rows
+
     for net in chip.nets:
-        
-        if net.get_num_modules() < 2:
+        xs = []
+        ys = []
+        for name in net.modules:
+            m = chip.get_module(name)
+            xs.append(m.x)
+            ys.append(m.y)
+        if len(xs) < 2:
             continue
-        
-        # เก็บตำแหน่งของโมดูลทั้งหมดใน net
-        x_positions = []
-        y_positions = []
-        
-        for module_name in net.modules:
-            module = chip.get_module(module_name)
-            if module:
-                x_positions.append(module.x)
-                y_positions.append(module.y)
-        
-        if len(x_positions) == 0:
-            continue
-        
-        # หากรอบที่ครอบโมดูลทั้งหมด (bounding box)
-        min_x = min(x_positions)
-        max_x = max(x_positions)
-        min_y = min(y_positions)
-        max_y = max(y_positions)
-        
-        # คำนวณ HPWL และพื้นที่ของ net นี้
+
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+
         hpwl_net = (max_x - min_x) + (max_y - min_y)
-        bbox_width = max_x - min_x
-        bbox_height = max_y - min_y
-        bbox_area = max(bbox_width * bbox_height, 1e-6)  # หลีกเลี่ยง division by zero
-        
-        # คำนวณ wire density (RUDY)
-        # density = ความยาวสาย / พื้นที่
-        wire_density = hpwl_net / bbox_area
+        bbox_w = max_x - min_x
+        bbox_h = max_y - min_y
+        bbox_area = max(bbox_w * bbox_h, 1e-6)
 
-        # แปลงตำแหน่งเป็นช่อง grid
-        start_col = int(min_x / cell_width)
-        end_col = int(max_x / cell_width)
-        start_row = int(min_y / cell_height)
-        end_row = int(max_y / cell_height)
-        
-        # จำกัดไม่ให้เกินขอบชิป
-        start_col = max(0, min(start_col, cols - 1))
-        end_col = max(0, min(end_col, cols - 1))
-        start_row = max(0, min(start_row, rows - 1))
-        end_row = max(0, min(end_row, rows - 1))
-        
-        # จำนวนช่องที่สายผ่าน
-        num_cells = (end_col - start_col + 1) * (end_row - start_row + 1)
-        num_cells = max(num_cells, 1)
-        
-        # กระจาย density เฉลี่ยในแต่ละช่อง
-        density_per_cell = wire_density / num_cells
+        density = hpwl_net / bbox_area
 
-        # เพิ่มค่า congestion ในช่องที่สายผ่าน
-        for r in range(start_row, end_row + 1):     # เดินตามแถว
-            for c in range(start_col, end_col + 1): # เดินตามคอลัมน์
-                congestion_map[r, c] += density_per_cell
-    
-    # คำนวณค่าสถิติ
-    max_congestion = np.max(congestion_map)
-    avg_congestion = np.mean(congestion_map)
-    
-    # คำนวณ overflow ratio (ช่องที่แออัดเกินค่าเฉลี่ย 2 เท่า)
-    overflow_threshold = avg_congestion * 2.0
-    overflow_cells = np.sum(congestion_map > overflow_threshold)
-    overflow_ratio = overflow_cells / (rows * cols)
-    
-    return congestion_map, max_congestion, avg_congestion, overflow_ratio
+        sc = int(min_x / cell_w)
+        ec = int(max_x / cell_w)
+        sr = int(min_y / cell_h)
+        er = int(max_y / cell_h)
 
-def calculate_congestion_penalty(congestion_map, avg_congestion):
-    
-    penalty = np.zeros_like(congestion_map)
-    
-    # ช่องที่ <= average → penalty ตามปกติ
-    normal_mask = congestion_map <= avg_congestion
-    penalty[normal_mask] = congestion_map[normal_mask]
-    
-    # ช่องที่ > average → penalty แรงขึ้น (ยกกำลัง 2)
-    overflow_mask = congestion_map > avg_congestion
-    penalty[overflow_mask] = congestion_map[overflow_mask] ** 2
-    
-    total_penalty = np.sum(penalty)
-    
-    return total_penalty
+        sc = max(0, min(sc, cols - 1))
+        ec = max(0, min(ec, cols - 1))
+        sr = max(0, min(sr, rows - 1))
+        er = max(0, min(er, rows - 1))
 
-def calculate_cost_function(chip, grid_size=(10, 10), alpha=0.5, beta=0.5):
-    """
-    Cost = alpha * HPWL_normalized + beta * Congestion_normalized
-    - Normalize ให้อยู่ในช่วง [0, 1] เพื่อความยุติธรรม
-    - alpha = น้ำหนักของ HPWL (default 0.5)
-    - beta = น้ำหนักของ Congestion (default 0.5)
-    """
-    
-    # 1. คำนวณ HPWL
+        num = (er - sr + 1) * (ec - sc + 1)
+        num = max(num, 1)
+
+        inc = density / num
+
+        for r in range(sr, er + 1):
+            for c in range(sc, ec + 1):
+                cmap[r, c] += inc
+
+    max_c = np.max(cmap)
+    avg_c = np.mean(cmap)
+    overflow = np.sum(cmap > 2 * avg_c) / (rows * cols)
+
+    return cmap, max_c, avg_c, overflow
+
+
+# -------------------------
+# Overlap (bin-based)
+# -------------------------
+def calculate_overlap_ratio(chip, grid_size=(128,128)):
+    gx, gy = grid_size
+    W, H = chip.width, chip.height
+    bw = W / gx
+    bh = H / gy
+
+    bins = [[0 for _ in range(gy)] for _ in range(gx)]
+    total_area = 0
+
+    for m in chip.modules.values():
+        x = int(m.x // bw)
+        y = int(m.y // bh)
+        if 0 <= x < gx and 0 <= y < gy:
+            bins[x][y] += m.width * m.height
+        total_area += m.width * m.height
+
+    overlap = 0
+    cap = bw * bh
+    for x in range(gx):
+        for y in range(gy):
+            if bins[x][y] > cap:
+                overlap += (bins[x][y] - cap)
+
+    if total_area == 0:
+        return 0.0
+
+    return overlap / total_area
+
+
+# -------------------------
+# Unified Cost Function
+# -------------------------
+def calculate_cost_function(
+    chip,
+    grid_size=(10,10),
+    overlap_grid=(128,128),
+    alpha=0.5,
+    beta=1e-3,
+    gamma=0.1
+):
+    # HPWL
     hpwl = calculate_HPWL(chip)
-    
-    # 2. คำนวณ Congestion (RUDY)
-    cong_map, max_cong, avg_cong, overflow_ratio = calculate_congestion(chip, grid_size)
-    
-    # 3. คำนวณ congestion penalty (ลงโทษ overflow)
-    congestion_penalty = calculate_congestion_penalty(cong_map, avg_cong)
-    
-    # 4. Normalize ให้อยู่ในช่วง [0, 1]
-    # ประมาณค่าสูงสุดที่เป็นไปได้
-    # HPWL max ≈ จำนวน nets * (chip_width + chip_height)
-    max_possible_hpwl = len(chip.nets) * (chip.width + chip.height)
-    if max_possible_hpwl == 0:
-        max_possible_hpwl = 1
-    
-    hpwl_normalized = hpwl / max_possible_hpwl
-    
-    # Congestion penalty max ≈ (rows * cols * max_cong^2)
-    rows, cols = grid_size
-    max_possible_congestion = rows * cols * (max_cong ** 2)
-    if max_possible_congestion == 0:
-        max_possible_congestion = 1
-    
-    congestion_normalized = congestion_penalty / max_possible_congestion
-    
-    # 5. คำนวณ Total Cost
-    total_cost = alpha * hpwl_normalized + beta * congestion_normalized
-    
-    return {
-        'total_cost': total_cost,
-        'hpwl': hpwl,
-        'hpwl_normalized': hpwl_normalized,     #HPWL หลัง normalize
-        'congestion_penalty': congestion_penalty,   #ค่าโทษ congestion
-        'congestion_normalized': congestion_normalized, #Congestion หลัง normalize
-        'max_congestion': max_cong,
-        'avg_congestion': avg_cong,
-        'overflow_ratio': overflow_ratio    #สัดส่วน overflow
-    }
 
-def evaluate_placement(chip, grid_size=(10, 10), alpha=0.5, beta=0.5): 
-    return calculate_cost_function(chip, grid_size, alpha, beta)
+    # Congestion (RUDY)
+    cmap, max_c, avg_c, overflow = calculate_congestion(chip, grid_size)
+    rows, cols = grid_size
+    cong_penalty = np.sum(np.where(cmap > avg_c, cmap**2, cmap))
+
+    # Overlap
+    overlap_ratio = calculate_overlap_ratio(chip, overlap_grid)
+
+    # Normalization
+    max_hpwl = len(chip.nets) * (chip.width + chip.height)
+    max_hpwl = max(max_hpwl, 1)
+
+    max_cong = rows * cols * (max_c ** 2)
+    max_cong = max(max_cong, 1)
+
+    hpwl_norm = hpwl / max_hpwl
+    cong_norm = cong_penalty / max_cong
+
+    # Total cost
+    total_cost = alpha*hpwl_norm + beta*cong_norm
+
+
+    return {
+        "total_cost": total_cost,
+        "hpwl": hpwl,
+        "max_congestion": max_c,
+        "avg_congestion": avg_c,
+        "overflow_ratio": overflow,
+        "overlap_ratio": overlap_ratio,
+        "congestion_penalty": cong_penalty,
+        "execution_cost": total_cost,
+    }

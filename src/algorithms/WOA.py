@@ -4,29 +4,25 @@ import random
 from typing import Tuple, Dict, Any, Optional, List
 
 import numpy as np
-
+from copy import deepcopy
 from src.chip import Chip
 from src.evaluator import calculate_cost_function
 
 
-# -------------------------------
-# utils (คล้าย SA / SHO)
-# -------------------------------
 def copy_chip_simple(ch: Chip) -> Chip:
     """
-    Copy แบบประหยัด: คัดลอก modules + position, แชร์ nets
+    คัดลอก chip ทั้งก้อนแบบปลอดภัย:
+    - modules
+    - nets
+    - ตำแหน่งทุกอย่าง
+    ใช้ deepcopy ตรง ๆ (ชัดกว่าและไม่สับสน)
     """
-    new = Chip(ch.width, ch.height)
-    new.nets = ch.nets  # แชร์ได้เพราะเราไม่แก้ nets
-    for name, m in ch.modules.items():
-        new.add_module(name, m.width, m.height, is_fixed=m.is_fixed)
-        new.modules[name].set_position(m.x, m.y)
-    return new
+    return deepcopy(ch)
 
 
-def _approx_overlap_ratio(ch: Chip, grid_bins: Tuple[int, int] = (200, 200)) -> float:
+def _approx_overlap_ratio(ch: Chip, grid_bins: Tuple[int, int]) -> float:
     """
-    Approximate overlap ratio ด้วยการ gridding (เหมือน SA/SHO)
+    Approximate overlap ratio ด้วยการ gridding:
 
     overlap_area_estimate = sum(max(0, area_sum - cell_area) over all cells)
     overlap_ratio = overlap_area_estimate / chip_area
@@ -78,191 +74,254 @@ def _score(
     """
     meta = calculate_cost_function(ch, grid_size=grid_size, alpha=alpha, beta=beta)
     ov = _approx_overlap_ratio(ch, overlap_grid) if gamma != 0.0 else 0.0
-    total = meta["total_cost"] + gamma * ov
-    return total, meta, ov
+    score = meta["total_cost"] + gamma * ov
+    return score, meta, ov
 
 
-def _jitter_small(rng: random.Random, ch: Chip, scale: float = 0.01):
-    """
-    warm-start: เขยิบตำแหน่งเดิมเล็กน้อย (แทนการสุ่มทั้งชิป)
-    """
-    for m in ch.get_movable_modules():
-        nx = m.x + rng.uniform(-scale, scale) * ch.width
-        ny = m.y + rng.uniform(-scale, scale) * ch.height
-        nx = max(0.0, min(ch.width - m.width, nx))
-        ny = max(0.0, min(ch.height - m.height, ny))
-        ch.modules[m.name].set_position(nx, ny)
-
-
-# -------------------------------
-#  WOA main
-# -------------------------------
 def whale_optimizer(
     start_chip: Chip,
-    pop_size: int = 2,                      # ลด pop เพื่อได้ iters สูงขึ้น
+    pop_size: int = 10,
     iters: int = 200,
     grid_size: Tuple[int, int] = (20, 20),
-    overlap_grid: Tuple[int, int] = (200, 200),
+    overlap_grid: Tuple[int, int] = (64, 64),
     alpha: float = 0.5,
     beta: float = 0.5,
     gamma: float = 0.0,
+    movement_scale: float = 0.02,  # base movement (fraction of chip, จะลดลงเรื่อย ๆ ตาม t)
     seed: Optional[int] = None,
     verbose: bool = True,
-    module_sample: int = 256,               # ขยับเฉพาะ K modules ต่อ whale ต่อรอบ
-    init_jitter: float = 0.01,              # เขยิบเลย์เอาต์เริ่มต้นนิดเดียว
+    module_sample: int = 384,   # จำนวนโมดูลต่อ whale ต่อรอบ
+    init_jitter: float = 0.003, # scale ของ jitter เริ่มต้น (fraction ของ chip)
 ) -> Dict[str, Any]:
     """
-    Whale Optimization แบบ warm-start + local moves
-    ให้ผลในรูปแบบเดียวกับ SA / SHO
+    Whale Optimization Algorithm (WOA) เวอร์ชัน tuned สำหรับ placement:
 
-    - warm-start: เริ่มจากเลย์เอาต์เดิม แล้ว jitter เล็กน้อย
-    - local moves: แต่ละรอบ ขยับเฉพาะ module_sample ตัว (แทนขยับทั้ง 2 แสน+ โมดูล)
+    - warm-start จาก layout เดิม
+    - ขยับ subset ของ movable modules ต่อรอบ (module_sample)
+    - ใช้ normalized coordinate [0,1] แล้ว clamp ระยะขยับต่อรอบ
+    - ใช้ cost เดียวกับ SA/SHO (HPWL + Congestion + gamma*overlap)
+    - ใช้ acceptance rule แบบ SA-ish (ยอมรับ solution แย่ลงได้บ้างช่วงต้น)
     """
+
+    t_start = time.time()
     rng = random.Random(seed)
 
-    # ---------- init population ----------
+    pop_size = max(int(pop_size), 1)
+    iters = max(int(iters), 1)
+    module_sample = max(int(module_sample), 1)
+    init_jitter = float(max(0.0, init_jitter))
+
+    movable = start_chip.get_movable_modules()
+    if not movable:
+        base_score, base_meta, base_ov = _score(
+            start_chip, grid_size, overlap_grid, alpha, beta, gamma
+        )
+        t_end = time.time()
+        return {
+            "best_cost": base_score,
+            "hpwl": float(base_meta["hpwl"]),
+            "max_congestion": float(base_meta["max_congestion"]),
+            "avg_congestion": float(base_meta["avg_congestion"]),
+            "overflow_ratio": float(base_meta["overflow_ratio"]),
+            "overlap_ratio": base_ov,
+            "execution_time": t_end - t_start,
+        }
+
+    W = float(start_chip.width)
+    H = float(start_chip.height)
+
+    movable_names = [m.name for m in movable]
+
+    # -------- initial population (warm start + jitter) --------
     population: List[Chip] = []
+    scores: List[float] = []
+    metas: List[Dict[str, Any]] = []
+    ov_list: List[float] = []
+
     for _ in range(pop_size):
-        c = copy_chip_simple(start_chip)
-        _jitter_small(rng, c, scale=init_jitter)
-        population.append(c)
+        ch = copy_chip_simple(start_chip)
 
-    # evaluate initial population
-    pop_scores: List[float] = []
-    pop_meta: List[Dict[str, Any]] = []
-    pop_ov: List[float] = []
-    for c in population:
-        s, m, ov = _score(c, grid_size, overlap_grid, alpha, beta, gamma)
-        pop_scores.append(s)
-        pop_meta.append(m)
-        pop_ov.append(ov)
+        # small jitter รอบ layout เดิม
+        for name in movable_names:
+            if rng.random() < 0.5:
+                m = ch.modules[name]
+                dx = rng.uniform(-init_jitter, init_jitter) * ch.width
+                dy = rng.uniform(-init_jitter, init_jitter) * ch.height
+                nx = max(0.0, min(ch.width - m.width, m.x + dx))
+                ny = max(0.0, min(ch.height - m.height, m.y + dy))
+                m.set_position(nx, ny)
 
-    best_idx = int(np.argmin(pop_scores))
+        s, meta, ov = _score(ch, grid_size, overlap_grid, alpha, beta, gamma)
+        population.append(ch)
+        scores.append(s)
+        metas.append(meta)
+        ov_list.append(ov)
+
+    best_idx = min(range(pop_size), key=lambda i: scores[i])
+    best_score = scores[best_idx]
+    best_meta = metas[best_idx]
+    best_ov = ov_list[best_idx]
     best_chip = copy_chip_simple(population[best_idx])
-    best_cost = pop_scores[best_idx]
-    best_meta = pop_meta[best_idx]
-    best_ov = pop_ov[best_idx]
 
-    start_t = time.time()
     if verbose:
-        print(f"WOA: pop_size={pop_size}, iters={iters}, seed={seed}")
+        print(
+            f"WOA: pop_size={pop_size}, iters={iters}, seed={seed}\n"
+            f"     initial best cost={best_score:.6f}"
+        )
 
-    movable_names = [m.name for m in start_chip.get_movable_modules()]
-
-    # ---------- main loop ----------
+    # -------- main loop --------
     for t in range(1, iters + 1):
-        a = 2.0 * (1.0 - t / max(1, iters))  # standard WOA coefficient
-        new_population: List[Chip] = []
-        new_scores: List[float] = []
-        new_meta: List[Dict[str, Any]] = []
-        new_ov: List[float] = []
+        # a ลดแบบ quadratic -> exploit ช่วงท้ายแรงขึ้น
+        a = 1.2 * ((iters - t) / float(iters)) ** 2.0
 
-        for i, ch in enumerate(population):
-            new_ch = copy_chip_simple(ch)
+        # temperature-like factor สำหรับ acceptance (สูงช่วงต้น, ต่ำช่วงท้าย)
+        temp_factor = max(0.2, (iters - t + 1) / float(iters))  # 1.0 -> 0.2
 
-            # เลือก subset ของโมดูลที่จะขยับรอบนี้ (local move)
-            if len(movable_names) == 0:
-                sample_names = []
-            else:
-                k = min(module_sample, len(movable_names))
-                sample_names = rng.sample(movable_names, k) if k < len(movable_names) else movable_names
+        for i in range(pop_size):
+            if i == best_idx:
+                continue  # elitism
 
-            for name in sample_names:
-                m = new_ch.modules[name]
-                bx, by = best_chip.modules[name].get_position()
+            ch = copy_chip_simple(population[i])
+
+            movable_now = ch.get_movable_modules()
+            if not movable_now:
+                continue
+
+            sample_k = min(len(movable_now), module_sample)
+            sample = rng.sample(movable_now, sample_k)
+
+            for m in sample:
+                mx = m.x / W
+                my = m.y / H
+
+                # best module
+                m_best = best_chip.get_module(m.name)
+                if m_best is None:
+                    continue
+                bx = m_best.x / W
+                by = m_best.y / H
 
                 r1 = rng.random()
                 r2 = rng.random()
-                A = 2 * a * r1 - a
-                C = 2 * r2
+                A = 2.0 * a * r1 - a
+                C = 2.0 * r2
                 p = rng.random()
-                l = rng.uniform(-1.0, 1.0)
+                l = 0.6 * rng.uniform(-1.0, 1.0)
 
                 if p < 0.5:
-                    # encircling / search
+                    # encircling / exploring
                     if abs(A) < 1.0:
-                        Dx = abs(C * bx - m.x)
-                        Dy = abs(C * by - m.y)
-                        x_new = bx - A * Dx
-                        y_new = by - A * Dy
+                        # เข้าหา best
+                        Dx = abs(C * bx - mx)
+                        Dy = abs(C * by - my)
+                        nx = bx - A * Dx
+                        ny = by - A * Dy
                     else:
-                        # ใช้วาฬตัวอื่นในประชากร
-                        j = rng.randrange(len(population))
-                        r_chip = population[j]
-                        rx, ry = r_chip.modules[name].get_position()
-                        Dx = abs(C * rx - m.x)
-                        Dy = abs(C * ry - m.y)
-                        x_new = rx - A * Dx
-                        y_new = ry - A * Dy
+                        # explore รอบ ๆ whale อื่น
+                        j = rng.randrange(pop_size)
+                        if j == i:
+                            j = (j + 1) % pop_size
+                        m_ref = population[j].get_module(m.name)
+                        if m_ref is None:
+                            continue
+                        rx = m_ref.x / W
+                        ry = m_ref.y / H
+                        Dx = abs(C * rx - mx)
+                        Dy = abs(C * ry - my)
+                        nx = rx - A * Dx
+                        ny = ry - A * Dy
                 else:
-                    # bubble-net (spiral)
-                    dist = math.hypot(bx - m.x, by - m.y)
-                    x_new = dist * math.exp(1.0 * l) * math.cos(2 * math.pi * l) + bx
-                    y_new = dist * math.exp(1.0 * l) * math.sin(2 * math.pi * l) + by
+                    # spiral update รอบ best
+                    dist = math.hypot(bx - mx, by - my)
+                    b_sp = 1.0
+                    nx = (
+                        dist * math.exp(b_sp * l) * math.cos(2.0 * math.pi * l) + bx
+                    )
+                    ny = (
+                        dist * math.exp(b_sp * l) * math.sin(2.0 * math.pi * l) + by
+                    )
 
-                # boundary check
-                x_new = max(0.0, min(new_ch.width - m.width, x_new))
-                y_new = max(0.0, min(new_ch.height - m.height, y_new))
-                new_ch.modules[name].set_position(x_new, y_new)
+                # ----- limit step size (movement clamp) -----
+                # ปรับ movement_scale ตามเวลา (แรงช่วงต้น, เบากช่วงท้าย)
+                eff_move = movement_scale * temp_factor  # temp_factor อยู่ใน [0.2, 1.0]
 
-            # คำนวณคะแนนของ candidate ตัวนี้
-            s, m_meta, ov = _score(new_ch, grid_size, overlap_grid, alpha, beta, gamma)
-            new_population.append(new_ch)
-            new_scores.append(s)
-            new_meta.append(m_meta)
-            new_ov.append(ov)
+                step_x = nx - mx
+                step_y = ny - my
+                limit = eff_move
 
-            # อัปเดต global best
-            if s < best_cost:
-                best_chip = copy_chip_simple(new_ch)
-                best_cost = s
-                best_meta = m_meta
-                best_ov = ov
+                if step_x > limit:
+                    step_x = limit
+                elif step_x < -limit:
+                    step_x = -limit
 
-        # Elitism: เอา best ไปแทนตัวที่แย่สุด
-        worst_idx = int(np.argmax(new_scores))
-        new_population[worst_idx] = copy_chip_simple(best_chip)
-        new_scores[worst_idx] = best_cost
-        new_meta[worst_idx] = best_meta
-        new_ov[worst_idx] = best_ov
+                if step_y > limit:
+                    step_y = limit
+                elif step_y < -limit:
+                    step_y = -limit
 
-        population = new_population
-        pop_scores = new_scores
-        pop_meta = new_meta
-        pop_ov = new_ov
+                nx = mx + step_x
+                ny = my + step_y
 
-        if verbose and (t % max(1, iters // 10) == 0):
-            print(f"Iter {t}/{iters} | Best: {best_cost:.6f}")
+                nx = max(0.0, min(1.0, nx))
+                ny = max(0.0, min(1.0, ny))
 
-    exec_time = time.time() - start_t
+                x_new = min(max(nx * W, 0.0), W - m.width)
+                y_new = min(max(ny * H, 0.0), H - m.height)
+                m.set_position(x_new, y_new)
 
-    # เขียนตำแหน่ง best กลับลง start_chip (เหมือน SA/SHO)
-    for name, mod in best_chip.modules.items():
-        if name in start_chip.modules and not start_chip.modules[name].is_fixed:
-            start_chip.modules[name].set_position(mod.x, mod.y)
+            new_score, new_meta, new_ov = _score(
+                ch, grid_size, overlap_grid, alpha, beta, gamma
+            )
 
-    result: Dict[str, Any] = {
-        "best_cost": best_cost,
-        "hpwl": best_meta.get("hpwl", None),
-        "hpwl_normalized": best_meta.get("hpwl_normalized", None),
-        "congestion_penalty": best_meta.get("congestion_penalty", None),
-        "congestion_normalized": best_meta.get("congestion_normalized", None),
-        "max_congestion": best_meta.get("max_congestion", None),
-        "avg_congestion": best_meta.get("avg_congestion", None),
-        "overflow_ratio": best_meta.get("overflow_ratio", None),
-        "overlap_ratio": best_ov,
-        "execution_time": exec_time,
-        "iterations": iters,
+            old_score = scores[i]
+            accept = False
+            if new_score < old_score:
+                accept = True
+            else:
+                # ยอมรับบางส่วนด้วยโอกาสมากขึ้นช่วง iteration แรก ๆ
+                delta = new_score - old_score
+                if delta < 1e-9:
+                    accept = True
+                else:
+                    denom = max(abs(old_score), 1e-6)
+                    # temp_factor สูง -> ยอมรับง่ายช่วงต้น, ยากช่วงท้าย
+                    prob = math.exp(-delta / (denom * temp_factor))
+                    # base factor 0.1 แทน 0.01 ให้โอกาสขยับมากขึ้น
+                    if rng.random() < 0.1 * prob:
+                        accept = True
+
+            if accept:
+                population[i] = ch
+                scores[i] = new_score
+                metas[i] = new_meta
+                ov_list[i] = new_ov
+
+                if new_score < best_score:
+                    best_score = new_score
+                    best_meta = new_meta
+                    best_ov = new_ov
+                    best_chip = copy_chip_simple(ch)
+                    best_idx = i
+
+        if verbose:
+            print(
+                f"Iteration {t}/{iters} | WOA best cost: {best_score:.6f}"
+            )
+
+    t_end = time.time()
+
+    # เขียน best layout กลับไปที่ start_chip
+    for m_best in best_chip.get_all_modules():
+        m_target = start_chip.get_module(m_best.name)
+        if m_target is not None:
+            m_target.set_position(m_best.x, m_best.y)
+
+    return {
+        "best_cost": float(best_score),
+        "hpwl": float(best_meta["hpwl"]),
+        "max_congestion": float(best_meta["max_congestion"]),
+        "avg_congestion": float(best_meta["avg_congestion"]),
+        "overflow_ratio": float(best_meta["overflow_ratio"]),
+        "overlap_ratio": float(best_ov),
+        "execution_time": t_end - t_start,
     }
-
-    if verbose:
-        print("\n==== WOA RESULT ====")
-        print(f"Best Cost      : {result['best_cost']}")
-        print(f"HPWL           : {result['hpwl']}")
-        print(f"Max Congestion : {result['max_congestion']}")
-        print(f"Avg Congestion : {result['avg_congestion']}")
-        print(f"Overflow Ratio : {result['overflow_ratio']}")
-        print(f"Overlap Ratio  : {result['overlap_ratio']}")
-        print(f"Execution Time : {result['execution_time']:.2f} sec")
-
-    return result

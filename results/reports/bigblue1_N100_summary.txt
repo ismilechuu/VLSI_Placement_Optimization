@@ -1,0 +1,34 @@
+Benchmark : bigblue1
+N_evals   : 100
+alpha/beta/gamma : 0.5, 0.001, 0.1
+grid      : (64, 64)
+overlap   : (128, 128)
+
+=== Algorithm Results ===
+
+---- SA ----
+Best Cost      : 0.046834
+HPWL           : 113,030,458
+Max Congestion : 4.23e+12
+Avg Congestion : 1.03e+09
+Overflow Ratio : 0.000244
+Overlap Ratio  : 0.390418
+Execution Time : 429.83 s
+
+---- SHO ----
+Best Cost      : 0.046816
+HPWL           : 112,752,615
+Max Congestion : 4.18e+12
+Avg Congestion : 1.02e+09
+Overflow Ratio : 0.000244
+Overlap Ratio  : 0.390426
+Execution Time : 655.87 s
+
+---- WOA ----
+Best Cost      : 0.046387
+HPWL           : 106,270,650
+Max Congestion : 8.67e+11
+Avg Congestion : 2.12e+08
+Overflow Ratio : 0.000244
+Overlap Ratio  : 0.390609
+Execution Time : 458.22 s

@@ -8,18 +8,20 @@ from src.parser import load_ucla_benchmark
 from src.algorithms.SA import simulated_annealing
 from src.algorithms.SHO import spotted_hyena_optimizer
 from src.algorithms.WOA import whale_optimizer
+from src.utils.logger import ExperimentLogger
+
 
 # -------------------------------
 # 1) CONFIG (key-value)
 # -------------------------------
 CONFIG = {
     "shared": {
-        "N_evals": 80,         # งบ evaluation เริ่มต้น (ปรับได้จาก CLI ด้วย --evals)
-        "grid": (64, 64),
-        "overlap_grid": (128, 128),
-        "alpha": 0.5,
-        "beta": 1e-3,
-        "gamma": 0.1,
+        "N_evals": 200,
+        "grid": (32, 32),
+        "overlap_grid": (64, 64),
+        "alpha": 0.9,
+        "beta": 1e-5,
+        "gamma": 0.0003,
         "seed": 42,
         "verbose": True,
     },
@@ -27,22 +29,24 @@ CONFIG = {
     "sa": {
         "t0": None,           # ให้ SA auto-derive T0 จาก delta cost
         "t_min": 1e-6,
-        "cooling": 0.99,
-        "move_disp_prob": 0.7,
-        "disp_scale_init": 0.02,
-        "disp_scale_final": 0.002,
+        "cooling": 0.985,
+        "move_disp_prob": 0.85,
+        "disp_scale_init": 0.05,
+        "disp_scale_final": 0.003,
     },
     # SHO: ~pop_size evaluations ต่อ 1 iteration
     "sho": {
-        "pop_size": 4,
-        "local_prob": 0.10,
-        "local_swap_k": 6,
+        "pop_size": 10,
+        "local_prob": 0.3,
+        "local_swap_k": 8,
+        "movement_scale": 0.15,   
     },
-    # WOA: ~pop_size evaluations ต่อ 1 iteration
+
     "woa": {
-        "pop_size": 1,
-        "module_sample": 4096,
-        "init_jitter": 0.002,
+        "pop_size": 8,
+        "module_sample": 800,
+        "init_jitter": 0.002, 
+        "movement_scale": 0.01, 
     },
     # เลือกว่าจะรันอะไรบ้าง
     "run": ["sa", "sho", "woa"],
@@ -52,8 +56,10 @@ CONFIG = {
 # 2) Runners (equal-evals)
 # -------------------------------
 def run_sa(chip, shared, sa_cfg, N_evals):
-    return simulated_annealing(
-        deepcopy(chip),
+    # ทำงานบนสำเนา chip เพื่อเก็บ layout ของ best
+    work_chip = deepcopy(chip)
+    res = simulated_annealing(
+        work_chip,
         iters=N_evals,  # equal-evals
         grid_size=shared["grid"],
         overlap_grid=shared["overlap_grid"],
@@ -69,13 +75,19 @@ def run_sa(chip, shared, sa_cfg, N_evals):
         seed=shared["seed"],
         verbose=shared["verbose"],
     )
+    # แนบ chip ที่ถูก optimize แล้วเข้าไปในผลลัพธ์
+    res["chip"] = work_chip
+    return res, work_chip
 
 
 def run_sho(chip, shared, sho_cfg, N_evals):
     pop = sho_cfg["pop_size"]
-    iters = ceil(N_evals / pop)  # equal-evals (ประมาณ)
-    return spotted_hyena_optimizer(
-        deepcopy(chip),
+    iters = max(N_evals // pop, 1)
+
+    work_chip = deepcopy(chip)
+
+    res = spotted_hyena_optimizer(
+        start_chip=chip,
         pop_size=pop,
         iters=iters,
         grid_size=shared["grid"],
@@ -85,16 +97,22 @@ def run_sho(chip, shared, sho_cfg, N_evals):
         gamma=shared["gamma"],
         local_prob=sho_cfg["local_prob"],
         local_swap_k=sho_cfg["local_swap_k"],
+        movement_scale=sho_cfg["movement_scale"],
         seed=shared["seed"],
         verbose=shared["verbose"],
     )
+    res["chip"] = work_chip
+    return res, work_chip
 
 
 def run_woa(chip, shared, woa_cfg, N_evals):
     pop = woa_cfg["pop_size"]
-    iters = ceil(N_evals / pop)  # equal-evals (ประมาณ)
-    return whale_optimizer(
-        deepcopy(chip),
+    iters = max(N_evals // pop, 1)
+
+    work_chip = deepcopy(chip)
+
+    res = whale_optimizer(
+        work_chip,
         pop_size=pop,
         iters=iters,
         grid_size=shared["grid"],
@@ -106,7 +124,11 @@ def run_woa(chip, shared, woa_cfg, N_evals):
         verbose=shared["verbose"],
         module_sample=woa_cfg["module_sample"],
         init_jitter=woa_cfg["init_jitter"],
+        movement_scale=woa_cfg["movement_scale"],
     )
+    res["chip"] = work_chip
+    return res, work_chip
+
 
 
 # -------------------------------
@@ -114,6 +136,8 @@ def run_woa(chip, shared, woa_cfg, N_evals):
 # -------------------------------
 def main():
     BASE = Path(__file__).resolve().parent / "data" / "ispd2005_benchmarks"
+
+    logger = ExperimentLogger(base_dir="results")
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--nodes", type=str, default=str(BASE / "bigblue1.inf.nodes"))
@@ -163,24 +187,37 @@ def main():
         chip_height=None,
     )
 
+    # ชื่อ benchmark (เอาจากชื่อไฟล์ nodes)
+    benchmark_name = Path(args.nodes).stem.split(".")[0]
+
     # เลือก algorithms
     algos = ["sa", "sho", "woa"] if args.algo == "all" else [args.algo]
 
+    n_evals = CONFIG["shared"]["N_evals"]       
+
     # Run & collect results
     results = {}
+
     for a in algos:
-        print("=" * 60, f"\n>>> Running {a.upper()}  (N_evals={CONFIG['shared']['N_evals']})")
         if a == "sa":
-            res = run_sa(chip, CONFIG["shared"], CONFIG["sa"], CONFIG["shared"]["N_evals"])
+            res, chip_after = run_sa(chip, CONFIG["shared"], CONFIG["sa"], n_evals)
         elif a == "sho":
-            res = run_sho(chip, CONFIG["shared"], CONFIG["sho"], CONFIG["shared"]["N_evals"])
+            res, chip_after = run_sho(chip, CONFIG["shared"], CONFIG["sho"], n_evals)
         elif a == "woa":
-            res = run_woa(chip, CONFIG["shared"], CONFIG["woa"], CONFIG["shared"]["N_evals"])
-        else:
-            raise ValueError(f"Unknown algo: {a}")
+            res, chip_after = run_woa(chip, CONFIG["shared"], CONFIG["woa"], n_evals)
+
         results[a] = res
 
-    # Summary table
+        # เซฟ layout จาก chip ที่ optimize แล้ว
+        logger.save_layout(
+            chip=chip_after,
+            benchmark=benchmark_name,
+            algo=a.upper(),
+            tag=f"N{n_evals}",
+        )
+
+
+    # Summary table (หน้าจอ)
     hdr = ["ALGO", "BestCost", "HPWL", "AvgCong", "Overflow", "Overlap", "Time(s)"]
     print("\n=== COMPARISON (equal-evaluations) ===")
     print("{:>6}  {:>10}  {:>12}  {:>12}  {:>8}  {:>8}  {:>8}".format(*hdr))
@@ -196,6 +233,23 @@ def main():
             r["overlap_ratio"],
             r["execution_time"],
         ))
+
+    # สร้างไฟล์ TXT summary + Markdown table สำหรับชุดรันนี้
+    txt_path = logger.write_txt_summary(
+        benchmark=benchmark_name,
+        shared_cfg=CONFIG["shared"],
+        n_evals=n_evals,
+        results=results,
+    )
+    md_path = logger.write_markdown_comparison(
+        benchmark=benchmark_name,
+        shared_cfg=CONFIG["shared"],
+        n_evals=n_evals,
+        results=results,
+    )
+    print(f"\nSaved TXT summary to: {txt_path}")
+    print(f"Saved Markdown comparison to: {md_path}")
+
 
 
 if __name__ == "__main__":
