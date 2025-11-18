@@ -14,13 +14,13 @@ class ExperimentLogger:
     - reports/         : txt + markdown summary ต่อ 1 ชุดการทดลอง
     """
 
-    def __init__(self, base_dir: str = "results"):
+    def __init__(self, base_dir: str = "results", enable_summary: bool = False):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
         # summary CSV
-        self.summary_path = self.base_dir / "summary_runs.csv"
-        if not self.summary_path.exists():
+        self.summary_path = self.base_dir / "summary_runs.csv" if enable_summary else None
+        if self.summary_path and not self.summary_path.exists():
             with open(self.summary_path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 writer.writerow([
@@ -78,6 +78,8 @@ class ExperimentLogger:
         seed: int,
         result: Dict[str, Any],
     ):
+        if not self.summary_path:
+            return
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         row = [
             ts,
