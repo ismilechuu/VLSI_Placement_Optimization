@@ -1,0 +1,43 @@
+Benchmark : n100
+N_evals   : 1000
+alpha/beta/gamma : 0.9, 1e-05, 0.0003
+grid      : (32, 32)
+overlap   : (64, 64)
+
+=== Algorithm Results ===
+
+---- SA ----
+Best Cost      : 0.275245
+HPWL           : 5,413,151
+Max Congestion : 8.78e-01
+Avg Congestion : 7.06e-03
+Overflow Ratio : 0.035156
+Overlap Ratio  : 0.000000
+Execution Time : 38.01 s
+
+---- SHO ----
+Best Cost      : 0.179152
+HPWL           : 3,523,319
+Max Congestion : 5.80e-01
+Avg Congestion : 4.73e-03
+Overflow Ratio : 0.102539
+Overlap Ratio  : 0.000000
+Execution Time : 24.93 s
+
+---- WOA ----
+Best Cost      : 0.309013
+HPWL           : 6,077,227
+Max Congestion : 7.64e-02
+Avg Congestion : 2.85e-03
+Overflow Ratio : 0.088867
+Overlap Ratio  : 0.000000
+Execution Time : 31.86 s
+
+---- GA ----
+Best Cost      : 0.303195
+HPWL           : 5,962,817
+Max Congestion : 9.96e-02
+Avg Congestion : 2.32e-03
+Overflow Ratio : 0.084961
+Overlap Ratio  : 0.000000
+Execution Time : 26.91 s

@@ -311,10 +311,10 @@ def whale_optimizer(
     t_end = time.time()
 
     # เขียน best layout กลับไปที่ start_chip
-    for m_best in best_chip.get_all_modules():
-        m_target = start_chip.get_module(m_best.name)
-        if m_target is not None:
-            m_target.set_position(m_best.x, m_best.y)
+    # for m_best in best_chip.get_all_modules():
+    #     m_target = start_chip.get_module(m_best.name)
+    #     if m_target is not None:
+    #         m_target.set_position(m_best.x, m_best.y)
 
     return {
         "best_cost": float(best_score),

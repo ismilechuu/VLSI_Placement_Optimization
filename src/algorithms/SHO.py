@@ -243,10 +243,10 @@ def spotted_hyena_optimizer(
     t_end = time.time()
 
     # write-back best layout ลง start_chip
-    for name, m_best in best_chip.modules.items():
-        m_target = start_chip.get_module(name)
-        if m_target is not None:
-            m_target.set_position(m_best.x, m_best.y)
+    # for name, m_best in best_chip.modules.items():
+    #     m_target = start_chip.get_module(name)
+    #     if m_target is not None:
+    #         m_target.set_position(m_best.x, m_best.y)
 
     return {
         "best_cost": best_score,

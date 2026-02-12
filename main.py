@@ -3,11 +3,13 @@ from pathlib import Path
 from copy import deepcopy
 from math import ceil
 import argparse
+import random
 
 from src.parser import load_ucla_benchmark
 from src.algorithms.SA import simulated_annealing
 from src.algorithms.SHO import spotted_hyena_optimizer
 from src.algorithms.WOA import whale_optimizer
+from src.algorithms.GA import genetic_optimizer
 from src.utils.logger import ExperimentLogger
 
 
@@ -48,8 +50,16 @@ CONFIG = {
         "init_jitter": 0.002, 
         "movement_scale": 0.01, 
     },
+    "ga": {
+        "pop_size": 40,        # เพิ่ม diversity
+        "generations": 40,     # ให้ converge จริง
+        "mutation_rate": 0.005,# ลดการสุ่มแรง
+        "perturb_scale": 0.002,# ขยับเล็กๆพอ
+        "swap_prob": 0.05,     # swap น้อยลงมาก
+    },
+
     # เลือกว่าจะรันอะไรบ้าง
-    "run": ["sa", "sho", "woa"],
+    "run": ["sa", "sho", "woa", "ga"],
 }
 
 # -------------------------------
@@ -87,7 +97,7 @@ def run_sho(chip, shared, sho_cfg, N_evals):
     work_chip = deepcopy(chip)
 
     res = spotted_hyena_optimizer(
-        start_chip=chip,
+        start_chip=work_chip,
         pop_size=pop,
         iters=iters,
         grid_size=shared["grid"],
@@ -129,20 +139,80 @@ def run_woa(chip, shared, woa_cfg, N_evals):
     res["chip"] = work_chip
     return res, work_chip
 
+def run_ga(chip, shared, ga_cfg, N_evals):
+    pop = ga_cfg["pop_size"]
+    gens = max(N_evals // pop, 1)
 
+    work_chip = deepcopy(chip)
+
+    res = genetic_optimizer(
+        start_chip=work_chip,
+        pop_size=pop,
+        generations=gens,
+        mutation_rate=ga_cfg["mutation_rate"],
+        perturb_scale=ga_cfg["perturb_scale"],
+        swap_prob=ga_cfg["swap_prob"],
+        grid_size=shared["grid"],
+        overlap_grid=shared["overlap_grid"],
+        alpha=shared["alpha"],
+        beta=shared["beta"],
+        seed=shared["seed"],
+        verbose=shared["verbose"],
+    )
+
+    res["chip"] = work_chip
+    return res, work_chip
+
+def nets_to_fake_nodes(nets_path, out_nodes_path):
+    names = set()
+
+    with open(nets_path) as f:
+        for line in f:
+            parts = line.split()
+            for p in parts:
+                if p.isalnum():
+                    names.add(p)
+
+    with open(out_nodes_path, "w") as f:
+        f.write(f"NumNodes : {len(names)}\n")
+        f.write("NumTerminals : 0\n\n")
+
+        for n in names:
+            f.write(f"{n} 1 1\n")   # size = 1x1
+
+    print("fake nodes created:", len(names))
+
+def random_initial_placement(chip, seed=42):
+    random.seed(seed)
+
+    for module in chip.get_all_modules():
+        x = random.uniform(0, chip.width)
+        y = random.uniform(0, chip.height)
+        module.set_position(x, y)
+
+def print_result(name, r):
+    print(f"\n==== {name} RESULT ====")
+    print(f"Best Cost      : {r['best_cost']:.6f}")
+    print(f"HPWL           : {r['hpwl']:.0f}")
+    print(f"Max Congestion : {r['max_congestion']:.6f}")
+    print(f"Avg Congestion : {r['avg_congestion']:.6f}")
+    print(f"Overflow Ratio : {r['overflow_ratio']:.6f}")
+    print(f"Overlap Ratio  : {r['overlap_ratio']:.6f}")
+    print(f"Execution Time : {r['execution_time']:.2f} sec")
 
 # -------------------------------
 # 3) main()
 # -------------------------------
 def main():
-    BASE = Path(__file__).resolve().parent / "data" / "ispd2005_benchmarks"
+    # BASE = Path(__file__).resolve().parent / "data" / "ispd2005_benchmarks"
+    BASE = Path(__file__).resolve().parent / "data" / "GSRC_benchmark"
 
     logger = ExperimentLogger(base_dir="results")
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--nodes", type=str, default=str(BASE / "bigblue1.inf.nodes"))
-    parser.add_argument("--nets",  type=str, default=str(BASE / "bigblue1.nets"))
-    parser.add_argument("--pl",    type=str, default=str(BASE / "bigblue1.pl"))
+    # parser.add_argument("--nodes", type=str, default=str(BASE / "bigblue1.inf.nodes"))
+    # parser.add_argument("--nets",  type=str, default=str(BASE / "bigblue1.nets"))
+    # parser.add_argument("--pl",    type=str, default=str(BASE / "bigblue1.pl"))
 
     parser.add_argument("--evals", type=int, default=CONFIG["shared"]["N_evals"],
                         help="equal-evaluations budget")
@@ -158,7 +228,7 @@ def main():
     parser.add_argument("--seed",  type=int, default=CONFIG["shared"]["seed"])
 
     parser.add_argument("--algo",  type=str, default="all",
-                        choices=["sa", "sho", "woa", "all"])
+                        choices=["sa", "sho", "woa", "ga", "all"])
     parser.add_argument("--verbose", action="store_true")
 
     args = parser.parse_args()
@@ -178,20 +248,26 @@ def main():
         "verbose": args.verbose or CONFIG["shared"]["verbose"],
     })
 
-    # Load chip
+    nets   = BASE / "n100.nets"
+    pl     = BASE / "n100.pl"
+    fake_nodes = BASE / "n100.nodes"
+
+    nets_to_fake_nodes(nets, fake_nodes)
+
     chip = load_ucla_benchmark(
-        nodes_file=args.nodes,
-        nets_file=args.nets,
-        pl_file=args.pl,
-        chip_width=None,
-        chip_height=None,
+        nodes_file=fake_nodes,
+        nets_file=nets,
+        pl_file=pl,
     )
 
+    random_initial_placement(chip)
+
     # ชื่อ benchmark (เอาจากชื่อไฟล์ nodes)
-    benchmark_name = Path(args.nodes).stem.split(".")[0]
+    # benchmark_name = Path(args.nodes).stem.split(".")[0]
+    benchmark_name = nets.stem
 
     # เลือก algorithms
-    algos = ["sa", "sho", "woa"] if args.algo == "all" else [args.algo]
+    algos = ["sa", "sho", "woa", "ga"] if args.algo == "all" else [args.algo]
 
     n_evals = CONFIG["shared"]["N_evals"]       
 
@@ -205,8 +281,12 @@ def main():
             res, chip_after = run_sho(chip, CONFIG["shared"], CONFIG["sho"], n_evals)
         elif a == "woa":
             res, chip_after = run_woa(chip, CONFIG["shared"], CONFIG["woa"], n_evals)
+        elif a == "ga":
+            res, chip_after = run_ga(chip, CONFIG["shared"], CONFIG["ga"], n_evals)
 
         results[a] = res
+        print_result(a.upper(), res)
+
 
         # เซฟ layout จาก chip ที่ optimize แล้ว
         logger.save_layout(

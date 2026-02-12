@@ -171,7 +171,7 @@ class ExperimentLogger:
         lines.append("")
         lines.append("=== Algorithm Results ===")
 
-        for key in ["sa", "sho", "woa"]:
+        for key in ["sa", "sho", "woa", "ga"]:
             if key not in results:
                 continue
             algo_name = key.upper()
@@ -208,8 +208,8 @@ class ExperimentLogger:
         path = report_dir / f"{benchmark}_N{n_evals}_comparison.md"
 
         # map key -> label
-        algo_order = [k for k in ["sa", "sho", "woa"] if k in results]
-        label = {"sa": "SA", "sho": "SHO", "woa": "WOA"}
+        algo_order = [k for k in ["sa", "sho", "woa", "ga"] if k in results]
+        label = {"sa": "SA", "sho": "SHO", "woa": "WOA", "ga": "GA"}
 
         # ดึงค่าที่ต้องใช้
         def getv(algo_key, field):

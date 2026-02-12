@@ -227,7 +227,14 @@ def read_pl_file(filepath):
     
     return positions
 
-def load_ucla_benchmark(nodes_file, nets_file, pl_file=None, chip_width=None, chip_height=None):
+
+def load_ucla_benchmark(
+    nodes_file=None,
+    blocks_file=None,
+    nets_file=None,
+    pl_file=None,
+    chip_width=None,
+    chip_height=None):
     """
     อ่าน UCLA benchmark ทั้งหมด แล้วสร้าง Chip object
     
@@ -247,7 +254,13 @@ def load_ucla_benchmark(nodes_file, nets_file, pl_file=None, chip_width=None, ch
     print("=" * 60)
     
     # 1. อ่านไฟล์ .nodes, .nets, .pl
-    modules_data = read_nodes_file(nodes_file)
+    if nodes_file:
+        modules_data = read_nodes_file(nodes_file)
+    elif blocks_file:
+        modules_data = parse_blocks_file(blocks_file)
+    else:
+        raise ValueError("Need nodes_file or blocks_file")
+
     nets_data = read_nets_file(nets_file)
     positions = {}
     if pl_file and os.path.exists(pl_file):

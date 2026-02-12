@@ -173,6 +173,9 @@ def simulated_annealing(
         T = max(t_min, T * cooling)
         disp_scale *= disp_decay
 
+        if verbose and (it % max(1, iters // 10) == 0 or it <= 5):
+            print(f"Iteration {it}/{iters} | SA best cost: {best_cost:.6f}")
+
     t_end = time.time()
 
     # ---------- copy best positions กลับไปที่ start_chip ----------
@@ -187,15 +190,15 @@ def simulated_annealing(
     final_ovlp = _approx_overlap_ratio(best_chip, overlap_grid)
 
     # 🔊 พิมพ์ผลเหมือนเดิม (เฉพาะตอน verbose=True)
-    if verbose:
-        print("\n==== SA RESULT ====")
-        print(f"Best Cost      : {float(best_cost)}")
-        print(f"HPWL           : {float(final_meta['hpwl'])}")
-        print(f"Max Congestion : {float(final_meta['max_congestion'])}")
-        print(f"Avg Congestion : {float(final_meta['avg_congestion'])}")
-        print(f"Overflow Ratio : {float(final_meta['overflow_ratio'])}")
-        print(f"Overlap Ratio  : {float(final_ovlp)}")
-        print(f"Execution Time : {t_end - t_start:.2f} sec")
+    # if verbose:
+    #     print("\n==== SA RESULT ====")
+    #     print(f"Best Cost      : {float(best_cost)}")
+    #     print(f"HPWL           : {float(final_meta['hpwl'])}")
+    #     print(f"Max Congestion : {float(final_meta['max_congestion'])}")
+    #     print(f"Avg Congestion : {float(final_meta['avg_congestion'])}")
+    #     print(f"Overflow Ratio : {float(final_meta['overflow_ratio'])}")
+    #     print(f"Overlap Ratio  : {float(final_ovlp)}")
+    #     print(f"Execution Time : {t_end - t_start:.2f} sec")
 
     return {
         "best_cost": float(best_cost),
